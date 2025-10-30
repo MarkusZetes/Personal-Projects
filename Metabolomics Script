@@ -1,0 +1,228 @@
+#!/usr/bin/env python3
+"""
+Random Forest baseline for metabolomics (binary classification).
+
+- Input: CSV with a 'Class' column (target) and metabolite columns (features).
+- Workflow:
+    1) L2-normalize features
+    2) Repeated train/test splits with fixed random states
+    3) 5-fold CV on the train split (accuracy/recall/F1)
+    4) Hold-out test metrics (accuracy/recall/F1)
+    5) Confusion matrices per split
+    6) Mean Gini feature importance and log-Gini plot
+
+This file mirrors the original project code, made tidy for publication.
+"""
+
+from __future__ import annotations
+
+import argparse
+import numpy as np
+import pandas as pd
+import seaborn as sns
+import matplotlib.pyplot as plt
+
+from sklearn.model_selection import train_test_split, cross_val_score
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.preprocessing import normalize
+from sklearn.metrics import accuracy_score, recall_score, f1_score, confusion_matrix
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Random Forest baseline for metabolomics (binary classification)."
+    )
+    parser.add_argument(
+        "--csv",
+        type=str,
+        default="Matric 50 pacienti.csv",
+        help="Path to input CSV (default: %(default)s)",
+    )
+    return parser.parse_args()
+
+
+def main() -> None:
+    args = parse_args()
+
+    # -------------------------------
+    # Load dataset
+    # -------------------------------
+    df = pd.read_csv(args.csv)
+
+    # Target and features
+    y = df["Class"]                         # binary labels expected
+    X = df.drop(columns=["Class"])          # all other columns as features
+
+    # L2-normalize features (row-wise)
+    X_normalized = normalize(X, norm="l2")
+
+    # -------------------------------
+    # Repeated splits & bookkeeping
+    # -------------------------------
+    random_states = [42, 101, 202, 1, 25, 88]
+
+    cv_accuracy_scores: list[float] = []
+    cv_recall_scores: list[float] = []
+    cv_f1_scores: list[float] = []
+
+    test_accuracy_scores: list[float] = []
+    test_recall_scores: list[float] = []
+    test_f1_scores: list[float] = []
+
+    conf_matrices: list[np.ndarray] = []
+    gini_importance_list: list[np.ndarray] = []
+
+    # -------------------------------
+    # Model training & evaluation
+    # -------------------------------
+    for rs in random_states:
+        X_train, X_test, y_train, y_test = train_test_split(
+            X_normalized,
+            y,
+            test_size=0.20,
+            random_state=rs,
+            stratify=y,  # keeps label balance consistent across splits
+        )
+
+        rf = RandomForestClassifier(
+            n_estimators=200,
+            max_depth=None,
+            min_samples_split=5,
+            min_samples_leaf=2,
+            max_features="sqrt",
+            random_state=rs,
+            n_jobs=-1,
+        )
+
+        # Cross-validation on the train split
+        cv_accuracy = cross_val_score(rf, X_train, y_train, cv=5, scoring="accuracy")
+        cv_recall = cross_val_score(rf, X_train, y_train, cv=5, scoring="recall")
+        cv_f1 = cross_val_score(rf, X_train, y_train, cv=5, scoring="f1")
+
+        # Fit on train, evaluate on hold-out test
+        rf.fit(X_train, y_train)
+        y_pred = rf.predict(X_test)
+
+        test_accuracy = accuracy_score(y_test, y_pred)
+        test_recall = recall_score(y_test, y_pred)
+        test_f1 = f1_score(y_test, y_pred)
+
+        cv_accuracy_scores.append(cv_accuracy.mean())
+        cv_recall_scores.append(cv_recall.mean())
+        cv_f1_scores.append(cv_f1.mean())
+
+        test_accuracy_scores.append(test_accuracy)
+        test_recall_scores.append(test_recall)
+        test_f1_scores.append(test_f1)
+
+        conf_matrices.append(confusion_matrix(y_test, y_pred))
+        gini_importance_list.append(rf.feature_importances_)
+
+    # -------------------------------
+    # Summary metrics
+    # -------------------------------
+    print("Mean Cross-Validation Accuracy:", np.mean(cv_accuracy_scores))
+    print("Mean Cross-Validation Recall:", np.mean(cv_recall_scores))
+    print("Mean Cross-Validation F1 Score:", np.mean(cv_f1_scores))
+    print("Mean Test Accuracy:", np.mean(test_accuracy_scores))
+    print("Mean Test Recall:", np.mean(test_recall_scores))
+    print("Mean Test F1 Score:", np.mean(test_f1_scores))
+    print("Gini Importance List:", gini_importance_list)
+
+    # -------------------------------
+    # Plot: test Accuracy & F1 per split
+    # -------------------------------
+    std_test_accuracy = np.std(test_accuracy_scores)
+    std_test_f1 = np.std(test_f1_scores)
+
+    split_labels = [f"Split {i+1}" for i in range(len(random_states))]
+
+    fig, ax = plt.subplots(figsize=(10, 6))
+    bar_width = 0.35
+    x = np.arange(len(split_labels))
+
+    ax.bar(
+        x - bar_width / 2,
+        test_accuracy_scores,
+        bar_width,
+        yerr=std_test_accuracy,
+        capsize=5,
+        label="Test Accuracy",
+        color="darkorange",
+        edgecolor="black",
+    )
+    ax.bar(
+        x + bar_width / 2,
+        test_f1_scores,
+        bar_width,
+        yerr=std_test_f1,
+        capsize=5,
+        label="Test F1 Score",
+        color="darkgreen",
+        edgecolor="black",
+    )
+
+    ax.set_xlabel("Data Splits")
+    ax.set_ylabel("Score")
+    ax.set_title("Test Accuracy and F1 Score per Split with Standard Deviation")
+    ax.set_xticks(x)
+    ax.set_xticklabels(split_labels)
+    ax.legend()
+    plt.tight_layout()
+    plt.show()
+
+    # -------------------------------
+    # Plot: confusion matrices
+    # -------------------------------
+    for i, cm in enumerate(conf_matrices, start=1):
+        plt.figure(figsize=(5, 4))
+        sns.heatmap(cm, annot=True, fmt="d", cmap="Reds", cbar=False)
+        plt.xlabel("Predicted")
+        plt.ylabel("True")
+        plt.title(f"Confusion Matrix for Split {i}")
+        plt.tight_layout()
+        plt.show()
+
+    # -------------------------------
+    # Gini importance (mean across splits)
+    # -------------------------------
+    mean_gini_importance = np.mean(gini_importance_list, axis=0)
+    feature_importance_df = (
+        pd.DataFrame({"Met": X.columns, "GI": mean_gini_importance})
+        .sort_values(by="GI", ascending=True)
+        .reset_index(drop=True)
+    )
+
+    print("Sorted Gini Importance List:")
+    print(feature_importance_df)
+
+    # feature_importance_df.to_csv("gini_importance_dataset_A.csv", index=False)
+
+    # -------------------------------
+    # Plot: log-Gini across metabolites
+    # -------------------------------
+    plt.figure(figsize=(12, 6))
+    plt.plot(
+        range(len(feature_importance_df["GI"])),
+        np.log(feature_importance_df["GI"]),
+        marker="o",
+        linestyle="-",
+        color="blue",
+    )
+    plt.scatter(
+        range(len(feature_importance_df["GI"])),
+        np.log(feature_importance_df["GI"]),
+        color="gold",
+        s=20,
+    )
+    plt.xticks([])
+    plt.xlabel("Metabolites")
+    plt.ylabel("Log Gini Index")
+    plt.title("Gini Index Across Metabolites")
+    plt.grid(axis="y", linestyle="--", alpha=0.7)
+    plt.tight_layout()
+    plt.show()
+
+
+if __name__ == "__main__":
+    main()
