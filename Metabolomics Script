@@ -6,7 +6,7 @@ Random Forest baseline for metabolomics (binary classification).
 - Workflow:
     1) L2-normalize features
     2) Repeated train/test splits with fixed random states
-    3) 5-fold CV on the train split (accuracy/recall/F1)
+    3) 6-fold CV on the train split (accuracy/recall/F1)
     4) Hold-out test metrics (accuracy/recall/F1)
     5) Confusion matrices per split
     6) Mean Gini feature importance and log-Gini plot
